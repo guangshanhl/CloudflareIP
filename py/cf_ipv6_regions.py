@@ -1,4 +1,5 @@
 import ipaddress
+import ssl
 import socket
 import sys
 import time
@@ -11,6 +12,10 @@ TEST_TIMEOUT = 3
 TEST_PORT = 443
 MAX_THREADS = 8
 TOP_NODES = 20
+SPEED_TEST_HOST = "speed.cloudflare.com"
+SPEED_TEST_PATH = "/__down?bytes=1000000"
+SPEED_TEST_MAX_BYTES = 1_000_000
+SPEED_TEST_MAX_SECONDS = 5
 
 CLOUDFLARE_IPV6_RANGES = [
     "2400:cb00::/32",
@@ -44,8 +49,20 @@ REGIONS = {
 }
 
 
-def format_line(ip, config):
-    return f"{ip}#{config['tag']} {config['label']}"
+def format_speed(bytes_per_second):
+    if not bytes_per_second:
+        return "0.00MB/s"
+    return f"{bytes_per_second / 1024 / 1024:.2f}MB/s"
+
+
+def format_line(node, config):
+    latency = node.get("response_time_ms")
+    latency_text = "timeout" if latency is None else f"{latency}ms"
+    speed_text = format_speed(node.get("speed_bytes_per_second"))
+    return (
+        f"{node['ip']}#{config['tag']} {config['label']} "
+        f"延时{latency_text} 速度{speed_text}"
+    )
 
 
 def candidate_addresses(seed, per_range=12):
@@ -68,6 +85,47 @@ class CloudflareIPv6Tester:
         self.results = []
         self.lock = threading.Lock()
 
+    def measure_download_speed(self, connected_socket):
+        context = ssl.create_default_context()
+        with context.wrap_socket(
+            connected_socket,
+            server_hostname=SPEED_TEST_HOST,
+        ) as tls_socket:
+            tls_socket.settimeout(TEST_TIMEOUT)
+            request = (
+                f"GET {SPEED_TEST_PATH} HTTP/1.1\r\n"
+                f"Host: {SPEED_TEST_HOST}\r\n"
+                "User-Agent: CloudflareIPv6Tester/1.0\r\n"
+                "Connection: close\r\n\r\n"
+            )
+            tls_socket.sendall(request.encode("ascii"))
+
+            body_started = False
+            pending = b""
+            downloaded = 0
+            start_time = time.time()
+
+            while downloaded < SPEED_TEST_MAX_BYTES:
+                if time.time() - start_time > SPEED_TEST_MAX_SECONDS:
+                    break
+                chunk = tls_socket.recv(65536)
+                if not chunk:
+                    break
+
+                if not body_started:
+                    pending += chunk
+                    header_end = pending.find(b"\r\n\r\n")
+                    if header_end == -1:
+                        continue
+                    body_started = True
+                    downloaded += len(pending[header_end + 4:])
+                    pending = b""
+                else:
+                    downloaded += len(chunk)
+
+            elapsed = max(time.time() - start_time, 0.001)
+            return downloaded / elapsed if downloaded else 0
+
     def test_node_speed(self, ip):
         try:
             start_time = time.time()
@@ -76,16 +134,22 @@ class CloudflareIPv6Tester:
                 result = s.connect_ex((ip, TEST_PORT, 0, 0))
                 if result == 0:
                     response_time = (time.time() - start_time) * 1000
+                    try:
+                        speed_bytes_per_second = self.measure_download_speed(s)
+                    except Exception:
+                        speed_bytes_per_second = 0
                     return {
                         "ip": ip,
                         "reachable": True,
                         "response_time_ms": int(response_time),
+                        "speed_bytes_per_second": speed_bytes_per_second,
                         "timestamp": datetime.now().isoformat(),
                     }
                 return {
                     "ip": ip,
                     "reachable": False,
                     "response_time_ms": None,
+                    "speed_bytes_per_second": 0,
                     "timestamp": datetime.now().isoformat(),
                 }
         except Exception as exc:
@@ -93,6 +157,7 @@ class CloudflareIPv6Tester:
                 "ip": ip,
                 "reachable": False,
                 "response_time_ms": None,
+                "speed_bytes_per_second": 0,
                 "error": str(exc),
                 "timestamp": datetime.now().isoformat(),
             }
@@ -126,20 +191,33 @@ class CloudflareIPv6Tester:
             node for node in self.results
             if node["reachable"] and node["response_time_ms"] is not None
         ]
-        return sorted(reachable_nodes, key=lambda node: node["response_time_ms"])
+        return sorted(
+            reachable_nodes,
+            key=lambda node: (
+                -node.get("speed_bytes_per_second", 0),
+                node["response_time_ms"],
+            ),
+        )
 
     def output_results(self, results):
         if results:
-            nodes = [node["ip"] for node in results[:TOP_NODES]]
+            nodes = results[:TOP_NODES]
         else:
             print(
                 "No reachable IPv6 node found; writing candidate list.",
                 file=sys.stderr,
             )
-            nodes = sorted(self.nodes)[:TOP_NODES]
+            nodes = [
+                {
+                    "ip": ip,
+                    "response_time_ms": None,
+                    "speed_bytes_per_second": 0,
+                }
+                for ip in sorted(self.nodes)[:TOP_NODES]
+            ]
 
-        for ip in nodes:
-            print(format_line(ip, self.config))
+        for node in nodes:
+            print(format_line(node, self.config))
 
     def run(self):
         self.test_all_nodes()
