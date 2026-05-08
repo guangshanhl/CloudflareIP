@@ -276,6 +276,10 @@
           <option value="https://raw.githubusercontent.com/gslege/CloudflareIP/refs/heads/main/SG.txt">新加坡IP</option>
           <option value="https://raw.githubusercontent.com/gslege/CloudflareIP/refs/heads/main/JP.txt">日本IP</option>
           <option value="https://raw.githubusercontent.com/gslege/CloudflareIP/refs/heads/main/US.txt">美国IP</option>
+          <option value="https://raw.githubusercontent.com/gslege/CloudflareIP/refs/heads/main/SGv6.txt">新加坡IPv6</option>
+          <option value="https://raw.githubusercontent.com/gslege/CloudflareIP/refs/heads/main/JPv6.txt">东京IPv6</option>
+          <option value="https://raw.githubusercontent.com/gslege/CloudflareIP/refs/heads/main/USv6.txt">美国IPv6</option>
+          <option value="https://raw.githubusercontent.com/gslege/CloudflareIP/refs/heads/main/IPv6.txt">三地IPv6</option>
           <option value="https://raw.githubusercontent.com/gslege/CloudflareIP/refs/heads/main/DE.txt">德国IP</option>
           <option value="https://raw.githubusercontent.com/gslege/CloudflareIP/refs/heads/main/NL.txt">荷兰IP</option>
           <option value="https://raw.githubusercontent.com/gslege/CloudflareIP/refs/heads/main/country.txt">网络IP</option>
@@ -390,11 +394,13 @@
                         // 分离IP和名称
                         const [ip, name = `服务器${index + 1}`] = line.trim().split('#');
                         
-                        // 验证IP格式
+                        // 验证IPv4/IPv6格式
                         const ipRegex = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
-                        if (!ipRegex.test(ip)) return;
+                        const ipv6Regex = /^(?:[0-9a-fA-F]{1,4}:){2,}[0-9a-fA-F:]*$/;
+                        if (!ipRegex.test(ip) && !ipv6Regex.test(ip)) return;
                         
-                        const vlessLink = vlessTemplate.replace('自定义1', ip).replace('自定义2', name).replace('自定义3', custom3);
+                        const host = ip.includes(':') ? `[${ip}]` : ip;
+                        const vlessLink = vlessTemplate.replace('自定义1', host).replace('自定义2', name).replace('自定义3', custom3);
                         links.push(`<li>${name}<span class="link">${vlessLink}</span><span class="copy-tip">已复制</span></li>`);
                     });
                     
